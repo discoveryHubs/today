@@ -1,3 +1,3 @@
 User-agent: *
 Allow: /
-Sitemap: https://grantsbenifits.github.io/daily-hub/sitemap.xml
+Sitemap: https://discoveryHubs.github.io/today/sitemap.xml
