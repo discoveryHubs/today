@@ -1,4 +1,6 @@
 # FILE: .github/workflows/build.yml
+# Only change: add the "Netlify fix" step right after "Build for Netlify" (rest same)
+
 name: Build Discovery Hub
 
 on:
@@ -120,8 +122,6 @@ jobs:
           rm -rf dist || true
           mkdir -p dist
 
-      # Build all variants first, then commit caches once (so Gemini cache persists)
-
       - name: Build for GitHub Pages (self canonical)
         env:
           BASE_URL: ${{ env.GH_BASE_URL }}
@@ -151,6 +151,12 @@ jobs:
           BUILD_NONCE: ${{ github.run_id }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scripts/build.py
+
+      - name: Netlify fix (sitemap.xml, robots.txt, rss.xml, key files, no rewrite hijack)
+        env:
+          BASE_URL: ${{ env.NETLIFY_BASE_URL }}
+        run: |
+          python scripts/netlify_fix.py dist/netlify "$BASE_URL"
 
       - name: Build for Vercel (self canonical)
         env:
