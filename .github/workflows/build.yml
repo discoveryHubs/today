@@ -1,12 +1,12 @@
 # FILE: .github/workflows/build.yml
-name: Build Discovery Hub (Multi-Cloud)
+name: Build Discovery Hub
 
 on:
   push:
     branches: ["main"]
     paths-ignore:
       - "docs/**"
-      - "data/**"
+
   workflow_dispatch:
     inputs:
       urls:
@@ -31,118 +31,220 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Prep dist
-        run: |
-          rm -rf dist
-          mkdir -p dist/netlify dist/vercel
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-      - name: Build (GitHub Pages)
+      - name: Compute BASE URLs
         env:
-          DOCS_DIR: docs
-          SITE_VARIANT: github-pages
-          SITE_NAME: Discovery Hub
-          REPO_URL: https://github.com/${{ github.repository }}
-          BUILD_NONCE: ${{ github.run_id }}
-          BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
-          EXTRA_URLS: ${{ github.event.inputs.urls }}
+          CF_PROJECT: ${{ secrets.CLOUDFLARE_PROJECT_NAME }}
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY##*/}"
+          echo "REPO_URL=https://github.com/${OWNER}/${REPO}" >> $GITHUB_ENV
+
+          echo "GH_BASE_URL=https://${OWNER}.github.io/${REPO}" >> $GITHUB_ENV
+          echo "NETLIFY_BASE_URL=https://dailyhubs.netlify.app" >> $GITHUB_ENV
+          echo "VERCEL_BASE_URL=https://daily-hub-livid.vercel.app" >> $GITHUB_ENV
+
+          if [ -n "$CF_PROJECT" ]; then
+            echo "CF_BASE_URL=https://${CF_PROJECT}.pages.dev" >> $GITHUB_ENV
+          else
+            echo "CF_BASE_URL=" >> $GITHUB_ENV
+          fi
+
+      - name: Append URLs from manual run into data/daily.csv
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.urls != '' }}
+        env:
+          INPUT_URLS: ${{ github.event.inputs.urls }}
+        run: |
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          raw = os.environ.get("INPUT_URLS", "")
+          urls = [u.strip() for u in raw.splitlines() if u.strip()]
+          if not urls:
+            raise SystemExit(0)
+
+          p = Path("data/daily.csv")
+          p.parent.mkdir(parents=True, exist_ok=True)
+
+          if not p.exists():
+            p.write_text("url\n", encoding="utf-8")
+
+          lines = p.read_text(encoding="utf-8").splitlines()
+          has_header = bool(lines) and lines[0].strip().lower() == "url"
+
+          existing = set()
+          if has_header:
+            for line in lines[1:]:
+              t = line.strip()
+              if t:
+                existing.add(t)
+          else:
+            for line in lines:
+              t = line.strip()
+              if t and t.lower() != "url":
+                existing.add(t)
+
+          add = []
+          for u in urls:
+            if not re.match(r"^https?://", u, re.I):
+              continue
+            if u in existing:
+              continue
+            add.append(u)
+            existing.add(u)
+
+          if not add:
+            raise SystemExit(0)
+
+          with p.open("a", encoding="utf-8", newline="\n") as f:
+            for u in add:
+              f.write(u + "\n")
+
+          print(f"Appended {len(add)} URL(s) to {p}")
+          PY
+
+      - name: Clean dist
+        run: |
+          rm -rf dist || true
+          mkdir -p dist
+
+      # Build all variants first, then commit caches once (so Gemini cache persists)
+
+      - name: Build for GitHub Pages (self canonical)
+        env:
+          BASE_URL: ${{ env.GH_BASE_URL }}
+          DOCS_DIR: "docs"
           ENABLE_INDEXNOW: "1"
           ENABLE_PINGOMATIC: "1"
           ENABLE_AI: "1"
+          ENABLE_SITE_BLURB: "1"
+          SITE_NAME: "Discovery Hub"
+          SITE_VARIANT: "github-pages"
+          REPO_URL: ${{ env.REPO_URL }}
+          BUILD_NONCE: ${{ github.run_id }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-2.5-flash
-          MAX_AI_CALLS: "30"
-        run: |
-          python scripts/build.py
+        run: python scripts/build.py
 
-      - name: Build (Netlify)
+      - name: Build for Netlify (self canonical)
         env:
-          DOCS_DIR: dist/netlify
-          SITE_VARIANT: netlify
-          SITE_NAME: Discovery Hub
-          REPO_URL: https://github.com/${{ github.repository }}
-          BUILD_NONCE: ${{ github.run_id }}
-          BASE_URL: https://dailyhubs.netlify.app
-          EXTRA_URLS: ""
+          BASE_URL: ${{ env.NETLIFY_BASE_URL }}
+          DOCS_DIR: "dist/netlify"
           ENABLE_INDEXNOW: "1"
           ENABLE_PINGOMATIC: "1"
-          ENABLE_AI: "0"
-        run: |
-          python scripts/build.py
-          python scripts/netlify_fix.py dist/netlify https://dailyhubs.netlify.app
-
-      - name: Build (Vercel)
-        env:
-          DOCS_DIR: dist/vercel
-          SITE_VARIANT: vercel
-          SITE_NAME: Discovery Hub
-          REPO_URL: https://github.com/${{ github.repository }}
+          ENABLE_AI: "1"
+          ENABLE_SITE_BLURB: "1"
+          SITE_NAME: "Discovery Hub"
+          SITE_VARIANT: "netlify"
+          REPO_URL: ${{ env.REPO_URL }}
           BUILD_NONCE: ${{ github.run_id }}
-          BASE_URL: https://daily-hub-livid.vercel.app
-          EXTRA_URLS: ""
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/build.py
+
+      - name: Build for Vercel (self canonical)
+        env:
+          BASE_URL: ${{ env.VERCEL_BASE_URL }}
+          DOCS_DIR: "dist/vercel"
           ENABLE_INDEXNOW: "1"
           ENABLE_PINGOMATIC: "1"
-          ENABLE_AI: "0"
-        run: |
-          python scripts/build.py
+          ENABLE_AI: "1"
+          ENABLE_SITE_BLURB: "1"
+          SITE_NAME: "Discovery Hub"
+          SITE_VARIANT: "vercel"
+          REPO_URL: ${{ env.REPO_URL }}
+          BUILD_NONCE: ${{ github.run_id }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/build.py
 
-      - name: Check deploy keys
-        id: deploycheck
+      - name: Build for Cloudflare Pages (self canonical)
+        if: ${{ env.CF_BASE_URL != '' }}
+        env:
+          BASE_URL: ${{ env.CF_BASE_URL }}
+          DOCS_DIR: "dist/cloudflare"
+          ENABLE_INDEXNOW: "1"
+          ENABLE_PINGOMATIC: "1"
+          ENABLE_AI: "1"
+          ENABLE_SITE_BLURB: "1"
+          SITE_NAME: "Discovery Hub"
+          SITE_VARIANT: "cloudflare"
+          REPO_URL: ${{ env.REPO_URL }}
+          BUILD_NONCE: ${{ github.run_id }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/build.py
+
+      - name: Commit generated files (docs + data caches)
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add docs/ data/ scripts/ .github/workflows/build.yml README.md || true
+          git commit -m "Auto-build hub (multi-cloud)"
+          git push
+
+      - name: Deploy to Netlify (CLI)
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then
+            echo "Netlify secrets missing, skipping deploy."
+            exit 0
+          fi
+
+          npm i -g netlify-cli@latest
+          netlify deploy \
+            --dir=dist/netlify \
+            --prod \
+            --site "$NETLIFY_SITE_ID" \
+            --auth "$NETLIFY_AUTH_TOKEN" \
+            --message "Discovery Hub deploy (netlify)"
+
+      - name: Deploy to Vercel (static)
+        env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          if [[ -n "$NETLIFY_AUTH_TOKEN" && -n "$NETLIFY_SITE_ID" ]]; then
-            echo "netlify=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "netlify=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "Vercel secrets missing, skipping deploy."
+            exit 0
           fi
 
-          if [[ -n "$VERCEL_TOKEN" && -n "$VERCEL_ORG_ID" && -n "$VERCEL_PROJECT_ID" ]]; then
-            echo "vercel=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "vercel=false" >> "$GITHUB_OUTPUT"
-          fi
+          npm i -g vercel@latest
+          cd dist/vercel
+          mkdir -p .vercel
+          printf '{"orgId":"%s","projectId":"%s"}' "$VERCEL_ORG_ID" "$VERCEL_PROJECT_ID" > .vercel/project.json
+          vercel deploy --prod --yes --token "$VERCEL_TOKEN"
 
-      - name: Deploy to Netlify
-        if: ${{ steps.deploycheck.outputs.netlify == 'true' }}
-        uses: nwtgck/actions-netlify@v3.0
-        with:
-          publish-dir: dist/netlify
-          production-branch: main
-          production-deploy: true
-          deploy-message: "Discovery Hub deploy (Netlify)"
+      - name: Deploy to Cloudflare Pages (Wrangler)
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-
-      - name: Deploy to Vercel
-        if: ${{ steps.deploycheck.outputs.vercel == 'true' }}
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: dist/vercel
-          vercel-args: "--prod"
-          github-comment: false
-
-      - name: Commit docs + data (GitHub Pages)
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PROJECT_NAME: ${{ secrets.CLOUDFLARE_PROJECT_NAME }}
         run: |
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add docs data
-            git commit -m "Update Discovery Hub"
-            git push
-          else
-            echo "No changes."
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$CLOUDFLARE_PROJECT_NAME" ]; then
+            echo "Cloudflare secrets missing, skipping deploy."
+            exit 0
           fi
+
+          npm i -g wrangler@latest
+          wrangler pages deploy dist/cloudflare \
+            --project-name "$CLOUDFLARE_PROJECT_NAME" \
+            --branch main \
+            --commit-dirty=true
