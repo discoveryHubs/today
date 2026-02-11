@@ -20,7 +20,17 @@
       "blurb": "Discovery Hub is a small link hub that lists recently added URLs. This build is labeled cloudflare.",
       "meta_description": "Discovery Hub lists recently added links with simple summaries. Build label: cloudflare.",
       "fetched_utc": "2026-02-10T10:28:23Z"
+    },
+    "https://discoveryHubs.github.io/today": {
+      "blurb": "Discovery Hub is a small link hub that lists recently added URLs. This build is labeled github-pages.",
+      "meta_description": "Discovery Hub lists recently added links with simple summaries. Build label: github-pages.",
+      "fetched_utc": "2026-02-11T13:17:24Z"
+    },
+    "https://discoveryhubs.pages.dev": {
+      "blurb": "Discovery Hub is a small link hub that lists recently added URLs. This build is labeled cloudflare.",
+      "meta_description": "Discovery Hub lists recently added links with simple summaries. Build label: cloudflare.",
+      "fetched_utc": "2026-02-11T13:17:27Z"
     }
   },
-  "generated_utc": "2026-02-10T10:28:23Z"
+  "generated_utc": "2026-02-11T13:17:27Z"
 }
