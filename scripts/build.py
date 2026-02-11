@@ -45,6 +45,9 @@ SITE_VARIANT = os.environ.get("SITE_VARIANT", "").strip()  # github-pages | netl
 REPO_URL = os.environ.get("REPO_URL", "").strip()
 BUILD_NONCE = os.environ.get("BUILD_NONCE", "").strip()
 
+# Optional: newline-separated URLs injected at runtime (workflow_dispatch)
+EXTRA_URLS = os.environ.get("EXTRA_URLS", "").strip()
+
 # AI (URL enrichment)
 ENABLE_AI = os.environ.get("ENABLE_AI", "0").strip() == "1"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -91,26 +94,44 @@ def normalize_url(u: str) -> str:
     u = re.sub(r"\s+", "", u)
     return u
 
-def read_input_urls() -> list[str]:
-    if not DATA_FILE.exists():
+def _read_extra_urls() -> list[str]:
+    if not EXTRA_URLS:
         return []
-    lines = DATA_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
     urls: list[str] = []
-    for i, raw in enumerate(lines):
-        s = raw.strip()
+    for raw in EXTRA_URLS.splitlines():
+        s = (raw or "").strip()
         if not s:
             continue
-        if i == 0 and s.lower() == "url":
-            continue
-
-        # tolerate old format: YYYY-MM-DD,https://...
         if "," in s and not URL_RE.match(s):
             parts = [p.strip() for p in s.split(",") if p.strip()]
             if parts and URL_RE.match(parts[-1]):
                 s = parts[-1]
-
         if URL_RE.match(s):
             urls.append(s)
+    return urls
+
+def read_input_urls() -> list[str]:
+    urls: list[str] = []
+    if DATA_FILE.exists():
+        lines = DATA_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        for i, raw in enumerate(lines):
+            s = (raw or "").strip()
+            if not s:
+                continue
+            if i == 0 and s.lower() == "url":
+                continue
+
+            # tolerate old format: YYYY-MM-DD,https://...
+            if "," in s and not URL_RE.match(s):
+                parts = [p.strip() for p in s.split(",") if p.strip()]
+                if parts and URL_RE.match(parts[-1]):
+                    s = parts[-1]
+
+            if URL_RE.match(s):
+                urls.append(s)
+
+    # Add injected URLs (workflow_dispatch input)
+    urls.extend(_read_extra_urls())
     return urls
 
 def dedupe_preserve_order(urls: list[str]) -> list[str]:
@@ -240,7 +261,6 @@ def _hsl_to_hex(h: float, s: float, l: float) -> str:
 
 def theme_vars() -> dict:
     base_seed = _seed_int(BASE_URL, SITE_VARIANT, "theme")
-    # create stable hue from seed, then nudge by variant
     hue = (base_seed % 36000) / 100.0
     variant_bias = {
         "github-pages": 8.0,
@@ -256,7 +276,6 @@ def theme_vars() -> dict:
     accent2 = _hsl_to_hex(h2, 0.70, 0.52)
     link = _hsl_to_hex((h1 + 20.0) % 360.0, 0.85, 0.70)
 
-    # slightly different backgrounds per variant
     bg = "#0b1220"
     card = "rgba(17,26,43,0.72)"
     line = "rgba(255,255,255,0.12)"
@@ -270,7 +289,6 @@ def theme_vars() -> dict:
     ]
     f = fonts[base_seed % len(fonts)]
 
-    # gradient fields vary per cloud
     g1 = f"radial-gradient(1200px 700px at 18% -12%, {accent}33, transparent 52%)"
     g2 = f"radial-gradient(1000px 600px at 112% 24%, {accent2}2e, transparent 48%)"
     g3 = f"radial-gradient(900px 520px at 46% 112%, {accent}18, transparent 55%)"
@@ -365,7 +383,7 @@ def _days_old(utc_z: str) -> int:
         return 999999
 
 # ---------------------------
-# URL enrichment cache (kept, improved prompt)
+# URL enrichment cache
 # ---------------------------
 def _load_enrich_cache() -> dict:
     if not ENRICH_CACHE_FILE.exists():
@@ -540,7 +558,6 @@ def enrich_urls(target_urls: list[str]) -> dict[str, dict]:
                 out["summary"] = (ai.get("summary") or "").strip()[:420]
                 out["topics"] = ai.get("topics") or []
 
-        # fallback if AI off or empty
         if not out["summary"]:
             if desc:
                 out["summary"] = desc[:360]
@@ -551,7 +568,6 @@ def enrich_urls(target_urls: list[str]) -> dict[str, dict]:
 
         items[u] = out
 
-        # small polite delay when AI is on
         if ENABLE_AI and GEMINI_API_KEY:
             time.sleep(0.08)
 
@@ -958,7 +974,6 @@ def render_feature_cards(featured_urls: list[str], enrich: dict[str, dict]) -> s
 
 def render_table(urls: list[str], enrich: dict[str, dict]) -> str:
     rows = []
-    n = 0
     for idx, u in enumerate(urls, start=1):
         host, path = host_and_path(u)
         rows.append(
@@ -995,7 +1010,6 @@ def render_table(urls: list[str], enrich: dict[str, dict]) -> str:
                 f"</td>"
                 f"</tr>"
             )
-        n += 1
     return (
         "<div class='controls'>"
         "<div class='search'><input id='q' type='search' placeholder='Filter by host, title, or URL' autocomplete='off' /></div>"
@@ -1032,19 +1046,15 @@ def build_main_pages(history: list[tuple[str, str]], input_urls: list[str], enri
     grouped = group_by_date(history)
     today_urls = grouped.get(today, [])
 
-    # Variation: different ordering per page and per cloud
     all_urls_unique = dedupe_preserve_order([u for _, u in history])
     all_for_display = shuffle_for_site(all_urls_unique, "all-display")[:MAX_ALL_LIST]
     index_for_display = shuffle_for_site(all_urls_unique, "index-display")[:MAX_ALL_LIST]
 
-    # For daily pages, shuffle but keep within that day
-    today_display = shuffle_for_site(list(today_urls), f"day-display-{today}")
+    today_page_path = f"d/{today}.html"
 
-    # Featured selection (varies by cloud + site)
     featured = pick_featured(all_urls_unique, 6, f"featured-{today}")
     featured_cards = render_feature_cards(featured, enrich)
 
-    # Stats
     hosts = set()
     for u in all_urls_unique:
         h, _ = host_and_path(u)
@@ -1053,10 +1063,6 @@ def build_main_pages(history: list[tuple[str, str]], input_urls: list[str], enri
     host_count = len(hosts)
     url_count = len(all_urls_unique)
 
-    # today page path
-    today_page_path = f"d/{today}.html"
-
-    # index.html
     idx_schema_urls = shuffle_for_site(list(all_for_display), "index-schema")
     idx_schema = itemlist_schema(SITE_NAME, idx_schema_urls, built_utc)
     idx_head = render_head(
@@ -1086,7 +1092,6 @@ def build_main_pages(history: list[tuple[str, str]], input_urls: list[str], enri
     )
     write_text(DOCS_DIR / "index.html", idx_head + idx_body)
 
-    # all.html
     all_schema_urls = shuffle_for_site(list(all_for_display), "all-schema")
     all_schema = itemlist_schema(SITE_NAME, all_schema_urls, built_utc)
     all_head = render_head(
@@ -1113,9 +1118,7 @@ def build_main_pages(history: list[tuple[str, str]], input_urls: list[str], enri
     )
     write_text(DOCS_DIR / "all.html", all_head + all_body)
 
-    # daily pages
     for day, day_urls in grouped.items():
-        # daily list based on first-seen, but display order varies per deployment
         day_unique = dedupe_preserve_order(day_urls)
         day_display = shuffle_for_site(list(day_unique), f"day-display-{day}")
         title = f"{SITE_NAME} {day}"
@@ -1225,7 +1228,6 @@ def build_robots():
     write_text(DOCS_DIR / "robots.txt", content)
 
 def build_sitemap(page_urls: list[str], built_utc: str):
-    # sitemap contains only local pages, not external links
     items = []
     for u in page_urls:
         loc = xml_escape(u)
@@ -1239,7 +1241,6 @@ def build_sitemap(page_urls: list[str], built_utc: str):
     write_text(DOCS_DIR / "sitemap.xml", xml)
 
 def build_rss(external_urls: list[str], built_rfc2822: str):
-    # RSS for external URLs (recent first)
     items = []
     for u in external_urls[:MAX_RSS_ITEMS]:
         esc_u = xml_escape(u)
@@ -1267,7 +1268,6 @@ def build_rss(external_urls: list[str], built_rfc2822: str):
     write_text(DOCS_DIR / "rss.xml", xml)
 
 def build_backlink_feed(external_urls: list[str], built_utc: str):
-    # lightweight XML file ping target (kept simple)
     items = []
     for u in external_urls[:MAX_RSS_ITEMS]:
         items.append(f"<link>{xml_escape(u)}</link>")
@@ -1294,7 +1294,6 @@ def ensure_indexnow_key() -> str:
     return k
 
 def write_indexnow_key_file_to_site(key: str):
-    # IndexNow requires a key file accessible under site root, named {key}.txt
     write_text(DOCS_DIR / f"{key}.txt", key + "\n")
 
 def submit_indexnow(site_pages: list[str]):
@@ -1322,11 +1321,8 @@ def submit_indexnow(site_pages: list[str]):
         "urlList": list(dict.fromkeys(site_pages))[:10000],
     }
 
-    # API endpoint that routes to participating engines
     endpoint = "https://api.indexnow.org/indexnow"
     status, body = _http_post_json(endpoint, payload, headers={}, timeout=18.0)
-
-    # best-effort, no hard fail
     _ = (status, body)
 
 def ping_pingomatic():
@@ -1336,7 +1332,6 @@ def ping_pingomatic():
         return
     try:
         proxy = xmlrpc.client.ServerProxy("http://rpc.pingomatic.com/", allow_none=True)
-        # Ping the backlink-feed.xml (stable file)
         proxy.weblogUpdates.ping(SITE_NAME, abs_url("/backlink-feed.xml"))
     except Exception:
         pass
@@ -1348,28 +1343,22 @@ def main():
     ensure_dirs()
     ensure_nojekyll()
 
-    built_utc = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     built_iso_z = utc_now_iso_z().replace("T", " ").replace("Z", "")
     built_rfc = utc_now_rfc2822()
 
-    # Load input, update history
     input_urls = dedupe_preserve_order(read_input_urls())
     today = utc_today_iso()
     history = update_history_with_today(input_urls, today)
 
-    # Enrich URLs (uses cache)
     all_urls_unique = dedupe_preserve_order([u for _, u in history])
     enrich = enrich_urls(all_urls_unique)
 
-    # Site blurb (per BASE_URL)
     site_blurb = get_site_blurb()
 
-    # Pages
     build_main_pages(history, input_urls, enrich, site_blurb, built_iso_z)
     build_static_pages(site_blurb, built_iso_z)
     build_robots()
 
-    # Local pages list for sitemap + indexnow
     local_pages = []
     local_pages.append(abs_url("/"))
     local_pages.append(abs_url("/index.html"))
@@ -1381,21 +1370,17 @@ def main():
     local_pages.append(abs_url("/status.html"))
     local_pages.append(abs_url("/backlink-feed.xml"))
 
-    # daily pages
     grouped = group_by_date(history)
     for day in grouped.keys():
         local_pages.append(abs_url(f"/d/{day}.html"))
 
-    # sitemap uses ISO Z time
     built_lastmod = utc_now_iso_z()
     build_sitemap(local_pages, built_lastmod.replace("Z", ""))
 
-    # RSS + backlink feed use external urls
-    recent_external = list(reversed(all_urls_unique))  # newest last in history, reverse => newest first
+    recent_external = list(reversed(all_urls_unique))
     build_rss(recent_external, built_rfc)
     build_backlink_feed(recent_external, built_lastmod.replace("Z", ""))
 
-    # Broadcast
     submit_indexnow(local_pages)
     ping_pingomatic()
 
