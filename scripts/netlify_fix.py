@@ -104,7 +104,6 @@ def _read_recent_urls(repo_root: Path, limit: int = 50) -> list[str]:
         if u.startswith("http://") or u.startswith("https://"):
             urls.append(u)
 
-    # keep most recent
     if len(urls) > limit:
         urls = urls[-limit:]
     return urls
@@ -122,7 +121,8 @@ def _load_enriched(repo_root: Path) -> dict:
 
 def _ensure_rss(out_dir: Path, repo_root: Path, base_url: str, now_utc: datetime) -> None:
     urls = _read_recent_urls(repo_root, limit=50)
-    enriched = _load_enriched(repo_root).get("items", {}) if isinstance(_load_enriched(repo_root), dict) else {}
+    enriched_root = _load_enriched(repo_root)
+    enriched = enriched_root.get("items", {}) if isinstance(enriched_root, dict) else {}
 
     rss = Element("rss", {"version": "2.0"})
     channel = SubElement(rss, "channel")
@@ -131,7 +131,7 @@ def _ensure_rss(out_dir: Path, repo_root: Path, base_url: str, now_utc: datetime
     SubElement(channel, "description").text = "Recently added links"
     SubElement(channel, "lastBuildDate").text = format_datetime(now_utc)
 
-    for u in reversed(urls):  # latest first
+    for u in reversed(urls):
         meta = enriched.get(u, {}) if isinstance(enriched, dict) else {}
         title = (meta.get("title") or "").strip() or u
         desc = (meta.get("summary") or meta.get("description") or "").strip() or u
@@ -149,7 +149,6 @@ def _ensure_rss(out_dir: Path, repo_root: Path, base_url: str, now_utc: datetime
 
 
 def _ensure_netlify_overrides(out_dir: Path) -> None:
-    # If Netlify UI has a catch-all rewrite, this file forces exact files to resolve as themselves.
     redirects_lines: list[str] = []
 
     must_files = [
@@ -166,11 +165,9 @@ def _ensure_netlify_overrides(out_dir: Path) -> None:
         if (out_dir / fn).exists():
             redirects_lines.append(f"/{fn} /{fn} 200")
 
-    # daily pages
     if (out_dir / "d").exists():
         redirects_lines.append("/d/* /d/:splat 200")
 
-    # google verification + indexnow key files if present
     for fn in sorted([p.name for p in out_dir.iterdir() if p.is_file()]):
         if fn.lower().startswith("google") and fn.lower().endswith(".html"):
             redirects_lines.append(f"/{fn} /{fn} 200")
@@ -180,6 +177,7 @@ def _ensure_netlify_overrides(out_dir: Path) -> None:
     _write_text(out_dir / "_redirects", "\n".join(redirects_lines) + "\n")
 
     headers = []
+
     def add_header(path: str, content_type: str) -> None:
         headers.append(path)
         headers.append(f"  Content-Type: {content_type}")
@@ -194,7 +192,6 @@ def _ensure_netlify_overrides(out_dir: Path) -> None:
 
 
 def _copy_root_tokens(repo_root: Path, out_dir: Path) -> None:
-    # Copy IndexNow key file(s) and Google verification files if they exist in docs/
     docs_dir = repo_root / "docs"
     if not docs_dir.exists():
         return
