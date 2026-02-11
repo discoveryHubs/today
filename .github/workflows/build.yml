@@ -6,6 +6,7 @@ on:
     branches: ["main"]
     paths-ignore:
       - "docs/**"
+      - "data/**"
   workflow_dispatch:
     inputs:
       urls:
@@ -90,18 +91,6 @@ jobs:
         run: |
           python scripts/build.py
 
-      - name: Commit docs + data (GitHub Pages)
-        run: |
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add docs data
-            git commit -m "Update Discovery Hub"
-            git push
-          else
-            echo "No changes."
-          fi
-
       - name: Check deploy keys
         id: deploycheck
         env:
@@ -145,3 +134,15 @@ jobs:
           working-directory: dist/vercel
           vercel-args: "--prod"
           github-comment: false
+
+      - name: Commit docs + data (GitHub Pages)
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add docs data
+            git commit -m "Update Discovery Hub"
+            git push
+          else
+            echo "No changes."
+          fi
